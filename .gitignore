@@ -1,0 +1,6 @@
+/.idea
+/.gradle
+/build
+/dependencies
+/graalvm
+.DS_Store

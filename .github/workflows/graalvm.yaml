@@ -1,0 +1,124 @@
+name: GraalVM Native Image builds
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'The version to be released'
+        required: true
+
+jobs:
+  build:
+    name: Build on ${{matrix.os}}
+    runs-on: ${{matrix.os}}
+    env:
+      RELEASE_VERSION: ${{github.ref_name}}
+    strategy:
+      matrix:
+        os: [ macos-latest, windows-latest, ubuntu-latest ]
+        include:
+          - os: 'ubuntu-latest'
+            label: 'linux'
+          - os: 'macos-latest'
+            label: 'mac'
+          - os: 'windows-latest'
+            label: 'windows'
+
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Install UPX on Linux
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y upx
+
+      - name: Install UPX on Windows
+        if: matrix.os == 'windows-latest'
+        run: choco install upx
+
+      - name: Install UPX on MacOS
+        if: matrix.os == 'macos-latest'
+        run: brew install upx
+
+      - uses: graalvm/setup-graalvm@v1
+        with:
+          version: '22.1.0'
+          java-version: '17'
+          components: 'native-image'
+          github-token: ${{secrets.GITHUB_TOKEN}}
+
+      - name: Build JAR
+        run: ./gradlew shadowJar
+
+      - name: Rename JAR
+        run: cp build/libs/superfluid-${{env.RELEASE_VERSION}}-all.jar superfluid-${{env.RELEASE_VERSION}}-${{matrix.label}}.jar
+
+      - name: Build native image
+        run: ./gradlew nativeCompile
+
+      - name: Rename and shrink native image (non-Windows)
+        if: matrix.os != 'windows-latest'
+        run: |
+          cp build/native/nativeCompile/superfluid superfluid-${{env.RELEASE_VERSION}}-${{matrix.label}}
+          upx superfluid-${{env.RELEASE_VERSION}}-${{matrix.label}}
+
+      - name: Rename native image but do not shrink (Windows)
+        if: matrix.os == 'windows-latest'
+        run: cp build/native/nativeCompile/superfluid.exe superfluid-${{env.RELEASE_VERSION}}-${{matrix.label}}.exe
+
+      - name: Upload JAR artifact
+        uses: actions/upload-artifact@v3
+        with:
+          path: superfluid-${{env.RELEASE_VERSION}}-${{matrix.label}}.jar
+
+      - name: Upload native image artifact (non-Windows)
+        if: matrix.os != 'windows-latest'
+        uses: actions/upload-artifact@v3
+        with:
+          path: superfluid-${{env.RELEASE_VERSION}}-${{matrix.label}}
+
+      - name: Upload native image artifact (Windows)
+        if: matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v3
+        with:
+          path: superfluid-${{env.RELEASE_VERSION}}-${{matrix.label}}.exe
+
+  release:
+    name: Release all
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [ build ]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
+        with:
+          tag_name: ${{github.ref_name}}
+          release_name: Version ${{github.ref_name}}
+          body: |
+            New Release
+          draft: false
+          prerelease: false
+
+      - name: Files before download
+        run: ls -laFR
+        working-directory: .
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v3
+        with:
+          path: .
+
+      - name: Files after download
+        run: ls -laFR
+        working-directory: .
+
+      - name: Upload release files
+        uses: softprops/action-gh-release@v1
+        with:
+          files: artifact/*
